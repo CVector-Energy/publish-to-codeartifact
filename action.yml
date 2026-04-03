@@ -1,0 +1,115 @@
+name: Publish to CodeArtifact
+description: Build and publish a Python package to AWS CodeArtifact using uv
+
+inputs:
+  package-name:
+    description: The Python package name (used in job summary output)
+    required: true
+  iam-role:
+    description: ARN of the AWS IAM role to assume via OIDC
+    required: true
+  aws-region:
+    description: AWS region
+    required: false
+    default: "us-east-1"
+  codeartifact-domain:
+    description: CodeArtifact domain name
+    required: true
+  codeartifact-domain-owner:
+    description: CodeArtifact domain owner AWS account ID
+    required: true
+  codeartifact-repository:
+    description: CodeArtifact repository name
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      with:
+        fetch-depth: 0
+        fetch-tags: true
+
+    - name: Compute dev version
+      if: github.event_name == 'push'
+      shell: bash
+      run: |
+        LATEST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "v0.0.0")
+        BASE_VERSION=${LATEST_TAG#v}
+        IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+        DEV_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1)).dev${GITHUB_RUN_NUMBER}"
+        sed -i "s/^version = .*/version = \"$DEV_VERSION\"/" pyproject.toml
+        echo "PACKAGE_VERSION=$DEV_VERSION" >> $GITHUB_ENV
+        echo "## Published \`${{ inputs.package-name }}==$DEV_VERSION\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Install this build for testing:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "cuv pip install ${{ inputs.package-name }}==$DEV_VERSION" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Or pin in \`pyproject.toml\`:" >> $GITHUB_STEP_SUMMARY
+        echo '```toml' >> $GITHUB_STEP_SUMMARY
+        echo "dependencies = [\"${{ inputs.package-name }}==$DEV_VERSION\"]" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: Compute rc version
+      if: github.event_name == 'release' && github.event.release.prerelease
+      shell: bash
+      run: |
+        TAG="${{ github.event.release.tag_name }}"
+        BASE_VERSION="${TAG#v}"
+        RC_VERSION="${BASE_VERSION}rc${GITHUB_RUN_NUMBER}"
+        sed -i "s/^version = .*/version = \"$RC_VERSION\"/" pyproject.toml
+        echo "PACKAGE_VERSION=$RC_VERSION" >> $GITHUB_ENV
+        echo "## Published \`${{ inputs.package-name }}==$RC_VERSION\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Install this build for testing:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "cuv pip install ${{ inputs.package-name }}==$RC_VERSION" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Or pin in \`pyproject.toml\`:" >> $GITHUB_STEP_SUMMARY
+        echo '```toml' >> $GITHUB_STEP_SUMMARY
+        echo "dependencies = [\"${{ inputs.package-name }}==$RC_VERSION\"]" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: Compute release version
+      if: github.event_name == 'release' && !github.event.release.prerelease
+      shell: bash
+      run: |
+        TAG="${{ github.event.release.tag_name }}"
+        RELEASE_VERSION="${TAG#v}"
+        sed -i "s/^version = .*/version = \"$RELEASE_VERSION\"/" pyproject.toml
+        echo "PACKAGE_VERSION=$RELEASE_VERSION" >> $GITHUB_ENV
+        echo "## Published \`${{ inputs.package-name }}==$RELEASE_VERSION\`" >> $GITHUB_STEP_SUMMARY
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      with:
+        role-to-assume: ${{ inputs.iam-role }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Configure CodeArtifact
+      shell: bash
+      run: |
+        CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --region ${{ inputs.aws-region }} --query authorizationToken --output text)
+        CODEARTIFACT_URL=$(aws codeartifact get-repository-endpoint --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --repository ${{ inputs.codeartifact-repository }} --region ${{ inputs.aws-region }} --format pypi --query repositoryEndpoint --output text)
+        echo "UV_PUBLISH_URL=${CODEARTIFACT_URL}" >> $GITHUB_ENV
+        echo "UV_PUBLISH_USERNAME=aws" >> $GITHUB_ENV
+        echo "UV_PUBLISH_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}" >> $GITHUB_ENV
+
+    - name: Build
+      shell: bash
+      run: uv build
+
+    - name: Publish
+      shell: bash
+      run: uv publish
+
+branding:
+  icon: package
+  color: orange
