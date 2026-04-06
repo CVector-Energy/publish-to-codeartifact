@@ -98,9 +98,12 @@ runs:
       run: |
         CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --region ${{ inputs.aws-region }} --query authorizationToken --output text)
         CODEARTIFACT_URL=$(aws codeartifact get-repository-endpoint --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --repository ${{ inputs.codeartifact-repository }} --region ${{ inputs.aws-region }} --format pypi --query repositoryEndpoint --output text)
+        echo "::add-mask::$CODEARTIFACT_AUTH_TOKEN"
         echo "UV_PUBLISH_URL=${CODEARTIFACT_URL}" >> $GITHUB_ENV
         echo "UV_PUBLISH_USERNAME=aws" >> $GITHUB_ENV
         echo "UV_PUBLISH_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}" >> $GITHUB_ENV
+        echo "UV_INDEX_CVECTOR_INTERNAL_USERNAME=aws" >> $GITHUB_ENV
+        echo "UV_INDEX_CVECTOR_INTERNAL_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}" >> $GITHUB_ENV
 
     - name: Build
       shell: bash
