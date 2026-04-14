@@ -101,8 +101,12 @@ runs:
     - name: Job summary
       shell: bash
       run: |
-        WHEEL_FILE=$(ls dist/*.whl | head -1)
-        PACKAGE_VERSION=$(basename "$WHEEL_FILE" | sed -E 's/^[a-zA-Z0-9_]+-//; s/-py[0-9].*//')
+        WHEEL_FILE=$(ls dist/*.whl 2>/dev/null | head -n 1)
+        if [ -z "$WHEEL_FILE" ]; then
+          echo "Error: No wheel file found in dist/"
+          exit 1
+        fi
+        PACKAGE_VERSION=$(basename "$WHEEL_FILE" | cut -d- -f2)
         echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
         echo "## Published \`${{ inputs.package-name }}==$PACKAGE_VERSION\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
