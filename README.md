@@ -6,11 +6,12 @@ A GitHub Action that builds and publishes Python packages to AWS CodeArtifact us
 
 - Builds Python packages with `uv build` (works with any PEP 517 build backend)
 - Publishes to AWS CodeArtifact via OIDC authentication
-- Automatically computes versions:
+- Computes fallback versions for projects with a static `version` in `pyproject.toml`:
   - **Push to branch**: `X.Y.Z.devN` (dev version based on latest tag + run number)
-  - **Pre-release**: `X.Y.Zrc.N` (release candidate)
+  - **Pre-release**: `X.Y.ZrcN` (release candidate)
   - **Release**: version from the release tag
-- Writes install instructions to the GitHub job summary
+- Projects using dynamic versioning (e.g., `hatch-vcs`) determine their own version at build time
+- Writes the actual published version and install instructions to the GitHub job summary
 
 ## Usage
 
@@ -50,6 +51,7 @@ jobs:
 | `codeartifact-domain` | Yes | | CodeArtifact domain name |
 | `codeartifact-domain-owner` | Yes | | CodeArtifact domain owner AWS account ID |
 | `codeartifact-repository` | Yes | | CodeArtifact repository name |
+| `uv-index-name` | No | | Name of the uv index (from `[[tool.uv.index]]`) to authenticate for reading private dependencies during build |
 
 ## Prerequisites
 
