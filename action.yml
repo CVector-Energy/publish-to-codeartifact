@@ -26,6 +26,11 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  package-version:
+    description: Version of the package that was published, read from the built wheel
+    value: ${{ steps.summary.outputs.package-version }}
+
 runs:
   using: composite
   steps:
@@ -34,6 +39,7 @@ runs:
       with:
         fetch-depth: 0
         fetch-tags: true
+        persist-credentials: false # nothing here pushes; the token would only sit in the git config for later steps to read
 
     - name: Compute dev version
       if: github.event_name == 'push'
@@ -51,18 +57,20 @@ runs:
     - name: Compute rc version
       if: github.event_name == 'release' && github.event.release.prerelease
       shell: bash
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
       run: |
-        TAG="${{ github.event.release.tag_name }}"
-        BASE_VERSION="${TAG#v}"
+        BASE_VERSION="${RELEASE_TAG#v}"
         RC_VERSION="${BASE_VERSION}rc${GITHUB_RUN_NUMBER}"
         sed -i "s/^version = .*/version = \"$RC_VERSION\"/" pyproject.toml
 
     - name: Compute release version
       if: github.event_name == 'release' && !github.event.release.prerelease
       shell: bash
+      env:
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
       run: |
-        TAG="${{ github.event.release.tag_name }}"
-        RELEASE_VERSION="${TAG#v}"
+        RELEASE_VERSION="${RELEASE_TAG#v}"
         sed -i "s/^version = .*/version = \"$RELEASE_VERSION\"/" pyproject.toml
 
     - name: Install uv
@@ -76,19 +84,31 @@ runs:
 
     - name: Configure CodeArtifact
       shell: bash
+      env:
+        DOMAIN: ${{ inputs.codeartifact-domain }}
+        DOMAIN_OWNER: ${{ inputs.codeartifact-domain-owner }}
+        REPOSITORY: ${{ inputs.codeartifact-repository }}
+        REGION: ${{ inputs.aws-region }}
+        INDEX_NAME: ${{ inputs.uv-index-name }}
       run: |
-        CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --region ${{ inputs.aws-region }} --query authorizationToken --output text)
-        CODEARTIFACT_URL=$(aws codeartifact get-repository-endpoint --domain ${{ inputs.codeartifact-domain }} --domain-owner ${{ inputs.codeartifact-domain-owner }} --repository ${{ inputs.codeartifact-repository }} --region ${{ inputs.aws-region }} --format pypi --query repositoryEndpoint --output text)
+        CODEARTIFACT_AUTH_TOKEN=$(aws codeartifact get-authorization-token --domain "$DOMAIN" --domain-owner "$DOMAIN_OWNER" --region "$REGION" --query authorizationToken --output text)
+        CODEARTIFACT_URL=$(aws codeartifact get-repository-endpoint --domain "$DOMAIN" --domain-owner "$DOMAIN_OWNER" --repository "$REPOSITORY" --region "$REGION" --format pypi --query repositoryEndpoint --output text)
         echo "::add-mask::$CODEARTIFACT_AUTH_TOKEN"
-        echo "UV_PUBLISH_URL=${CODEARTIFACT_URL}" >> $GITHUB_ENV
-        echo "UV_PUBLISH_USERNAME=aws" >> $GITHUB_ENV
-        echo "UV_PUBLISH_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}" >> $GITHUB_ENV
-        INDEX_NAME="${{ inputs.uv-index-name }}"
-        if [[ -n "$INDEX_NAME" ]]; then
-          ENV_NAME=$(echo "$INDEX_NAME" | tr '[:lower:]-' '[:upper:]_')
-          echo "UV_INDEX_${ENV_NAME}_USERNAME=aws" >> $GITHUB_ENV
-          echo "UV_INDEX_${ENV_NAME}_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}" >> $GITHUB_ENV
-        fi
+        # uv reads these from the environment in the build and publish steps below, and the
+        # uv-index variable names are built from an input, so an environment file is the only
+        # way to set them. The values come from the CodeArtifact API, never from workflow
+        # context, and a token is a single line, so it cannot forge further assignments.
+        # zizmor: ignore[github-env]
+        {
+          echo "UV_PUBLISH_URL=${CODEARTIFACT_URL}"
+          echo "UV_PUBLISH_USERNAME=aws"
+          echo "UV_PUBLISH_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}"
+          if [[ -n "$INDEX_NAME" ]]; then
+            ENV_NAME=$(echo "$INDEX_NAME" | tr '[:lower:]-' '[:upper:]_')
+            echo "UV_INDEX_${ENV_NAME}_USERNAME=aws"
+            echo "UV_INDEX_${ENV_NAME}_PASSWORD=${CODEARTIFACT_AUTH_TOKEN}"
+          fi
+        } >> "$GITHUB_ENV"
 
     - name: Build
       shell: bash
@@ -99,7 +119,10 @@ runs:
       run: uv publish
 
     - name: Job summary
+      id: summary
       shell: bash
+      env:
+        PACKAGE_NAME: ${{ inputs.package-name }}
       run: |
         WHEEL_FILE=$(ls dist/*.whl 2>/dev/null | head -n 1)
         if [ -z "$WHEEL_FILE" ]; then
@@ -107,18 +130,20 @@ runs:
           exit 1
         fi
         PACKAGE_VERSION=$(basename "$WHEEL_FILE" | cut -d- -f2)
-        echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> $GITHUB_ENV
-        echo "## Published \`${{ inputs.package-name }}==$PACKAGE_VERSION\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Install this build for testing:" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "cuv pip install ${{ inputs.package-name }}==$PACKAGE_VERSION" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Or pin in \`pyproject.toml\`:" >> $GITHUB_STEP_SUMMARY
-        echo '```toml' >> $GITHUB_STEP_SUMMARY
-        echo "dependencies = [\"${{ inputs.package-name }}==$PACKAGE_VERSION\"]" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "package-version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+        {
+          echo "## Published \`${PACKAGE_NAME}==${PACKAGE_VERSION}\`"
+          echo ""
+          echo "Install this build for testing:"
+          echo '```'
+          echo "cuv pip install ${PACKAGE_NAME}==${PACKAGE_VERSION}"
+          echo '```'
+          echo ""
+          echo "Or pin in \`pyproject.toml\`:"
+          echo '```toml'
+          echo "dependencies = [\"${PACKAGE_NAME}==${PACKAGE_VERSION}\"]"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
 
 branding:
   icon: package
